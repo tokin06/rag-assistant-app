@@ -23,52 +23,7 @@ PERSIST_DIR = "chroma_db_cache"
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
-# --- カスタムテーマ (見た目) の設定 ---
-st.markdown(
-    """
-    <style>
-    /* 全体設定: フォント、背景 */
-    .stApp {
-        background-color: #f0f2f6; /* 薄いグレーの背景 */
-        color: #262730; /* テキストの色 */
-        font-family: Arial, sans-serif;
-    }
-    /* サイドバーの設定 */
-    [data-testid="stSidebar"] {
-        background-color: #ffffff; /* サイドバーを白に */
-    }
-    /* メインタイトル (H1) の設定 */
-    h1 {
-        color: #004d80; /* 深い青 */
-        border-bottom: 2px solid #e0e0e0;
-        padding-bottom: 10px;
-    }
-    /* プライマリボタンの色 (要件事実を自動作成する) */
-    .stButton>button {
-        background-color: #0066cc; /* 鮮やかな青 */
-        color: white;
-        border-radius: 8px;
-        border: none;
-        transition: background-color 0.3s;
-    }
-    .stButton>button:hover {
-        background-color: #0056b3; /* ホバーで少し暗く */
-    }
-    /* 情報メッセージ (事案の概要) */
-    [data-testid="stText"] {
-        border-left: 5px solid #004d80;
-        padding: 10px;
-        background-color: #f8f8ff;
-    }
-    /* 成功メッセージを非表示に (スマート表示) */
-    .stSuccess {
-        display: none; 
-    }
-    </style>
-    """, 
-    unsafe_allow_html=True
-)
-
+# (以前のカスタムCSSブロックは削除されました)
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
@@ -82,7 +37,6 @@ def initialize_knowledge_base():
         try:
             embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             db = Chroma(persist_directory=PERSIST_DIR, embedding_function=embeddings_model)
-            # st.success のメッセージは削除 (スマート表示のため)
             return db
         except Exception as e:
             st.warning(f"キャッシュロード中にエラーが発生しました。再構築を試みます: {e}")
@@ -113,7 +67,6 @@ def initialize_knowledge_base():
             persist_directory=PERSIST_DIR
         )
         db.persist() # 永続化を実行
-        # st.success のメッセージは削除 (スマート表示のため)
         return db
     except Exception as e:
         st.error(f"データベース構築中にエラーが発生しました: {e}")
@@ -186,15 +139,6 @@ def clear_knowledge_cache():
     st.cache_resource.clear()
     st.rerun()
 
-# サイドバーに再構築ボタンを設置
-with st.sidebar:
-    st.markdown("### 🛠️ データベース管理")
-    if st.button("知識ベースを再構築/リロード", help="knowledge_base.txt を変更した後に押してください。"):
-        clear_knowledge_cache()
-    
-    st.markdown("---")
-
-
 # データベースの初期化
 db_instance = initialize_knowledge_base()
     
@@ -213,30 +157,41 @@ if db_instance:
         placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。"
     )
     
-    if st.button("📝 要件事実を自動作成する", type="primary", disabled=is_running): 
-        if not contract_description:
-            st.warning("事案の概要を入力してください。")
-        else:
-            # 1. 乱用防止チェックの実行
-            with st.spinner("入力内容が法律関連の事案かチェック中です..."):
-                relevance = check_query_relevance(contract_description)
-
-            if relevance == "NO":
-                st.error("入力内容が法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
+    # 乱用防止ボタンとキャッシュクリアボタンを横並びにする
+    col1, col2 = st.columns([0.7, 0.3])
+    
+    with col1:
+        if st.button("📝 要件事実を自動作成する", type="primary", disabled=is_running): 
+            if not contract_description:
+                st.warning("事案の概要を入力してください。")
             else:
-                # 2. RAG処理の実行
-                st.session_state['running'] = True
-                with st.spinner("AIが要件事実論と知識を参照して分析中です..."):
-                    try:
-                        result = get_required_elements_from_rag(db_instance, contract_description)
-                        
-                        st.subheader("✅ 請求権と要件事実の構成")
-                        st.markdown(result)
-                        
-                    except Exception as e:
-                        st.error(f"処理中にエラーが発生しました。詳細: {e}")
-                    finally:
-                        st.session_state['running'] = False 
+                # 1. 乱用防止チェックの実行
+                with st.spinner("入力内容が法律関連の事案かチェック中です..."):
+                    relevance = check_query_relevance(contract_description)
+
+                if relevance == "NO":
+                    st.error("入力内容が法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
+                else:
+                    # 2. RAG処理の実行
+                    st.session_state['running'] = True
+                    with st.spinner("AIが要件事実論と知識を参照して分析中です..."):
+                        try:
+                            result = get_required_elements_from_rag(db_instance, contract_description)
+                            
+                            st.subheader("✅ 請求権と要件事実の構成")
+                            st.markdown(result)
+                            
+                        except Exception as e:
+                            st.error(f"処理中にエラーが発生しました。詳細: {e}")
+                        finally:
+                            st.session_state['running'] = False 
+
+    with col2:
+        st.markdown("---") # 区切り線
+        # リロードボタンを小さく配置
+        if st.button("データベースをリロード", help="知識ベースを変更した後に押してください。", use_container_width=True):
+            clear_knowledge_cache()
+
 
 else:
     # 失敗時のみ、詳細なエラーメッセージを表示
