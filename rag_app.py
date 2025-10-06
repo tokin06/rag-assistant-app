@@ -10,46 +10,21 @@ from langchain_core.output_parsers import StrOutputParser
 # ====================================================
 # 0. 設定と初期化 (APIキーの秘匿化)
 # ====================================================
+
 # ★★★ APIキーをst.secretsから安全に取得します ★★★
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
+    # 秘匿化されたキーがない場合はエラーで停止
     st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop() 
 
-KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
-PERSIST_DIR = "chroma_db_cache"            
+KNOWLEDGE_BASE_PATH = "knowledge_base.txt" # 👈 ファイルパス (単一ファイル)
+PERSIST_DIR = "chroma_db_cache"            # ChromaDBのキャッシュフォルダパス
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
-# ====================================================
-# 👈 ここからアクセス制限ロジック (最終セキュリティ保証版)
-# ====================================================
-
-# 許可するメールアドレスのリスト (🚨 ここを必ず修正してください)
-ALLOWED_USERS = ["wada.ayumu06@gmail.com"] 
-
-user_email = None
-
-# 認証情報を取得する試み
-try:
-    if st.user and st.user.email: 
-        user_email = st.user.email
-    elif st.experimental_user and st.experimental_user.email:
-        user_email = st.experimental_user.email
-except Exception:
-    pass
-
-# 認証チェックの実行
-# ローカルチェックを完全に削除し、Web環境での認証が必須となります。
-if user_email not in ALLOWED_USERS:
-    st.error("🚨 アクセスが許可されていません。")
-    st.error("このアプリケーションは、特定のユーザーのみが利用可能です。Googleアカウントでログインしてください。")
-    st.stop() 
-
-# ====================================================
-# 👈 アクセス制限ロジックの終わり
-# ====================================================
+# (旧アクセス制限ロジックはここで削除されました)
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
@@ -58,6 +33,7 @@ if user_email not in ALLOWED_USERS:
 def initialize_knowledge_base():
     """知識データベース（本棚）を初期化し、ChromaDBを返す"""
     
+    # 既存のデータベースが存在するかチェック (高速ロード)
     if os.path.exists(PERSIST_DIR):
         try:
             embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
@@ -67,7 +43,9 @@ def initialize_knowledge_base():
         except Exception as e:
             st.warning(f"キャッシュロード中にエラーが発生しました。再構築を試みます: {e}")
     
+    # 既存DBがない場合、またはロード失敗した場合、新規作成ロジックへ
     try:
+        # TextLoaderで単一のファイルを読み込む
         loader = TextLoader(KNOWLEDGE_BASE_PATH, encoding="utf-8")
         all_documents = loader.load()
     except FileNotFoundError:
@@ -76,33 +54,38 @@ def initialize_knowledge_base():
         return None
         
     try:
+        # テキストの分割 (チャンキング)
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
         texts = text_splitter.split_documents(all_documents)
         
+        # 埋め込みモデル (タイムアウトを180秒に延長)
         embeddings_model = GoogleGenerativeAIEmbeddings(
             model="models/embedding-001",
             request_options={"timeout": 180}
         )
 
+        # ChromaDBの作成と永続化
         db = Chroma.from_documents(
             texts, 
             embeddings_model, 
             persist_directory=PERSIST_DIR
         )
-        db.persist()
+        db.persist() # 永続化を実行
         st.success("知識データベースを新規作成し、キャッシュに保存しました！")
         return db
     except Exception as e:
         st.error(f"データベース構築中にエラーが発生しました: {e}")
         return None
 
-# RAGコアロジック (以降のコードは省略)
+# RAGコアロジック
 def get_required_elements_from_rag(db, description): 
     """RAGを実行し、事案に対する要件事実の構成を返す"""
     
+    # 記述内容に関連する情報をデータベースから検索（「本を探す」）
     docs = db.similarity_search(description, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
+    # AIに与える指示（プロンプト）を作成 (要件事実生成用プロンプト)
     prompt_template = ChatPromptTemplate.from_messages(
         [
             ("system", """
@@ -119,6 +102,7 @@ def get_required_elements_from_rag(db, description):
         ]
     )
 
+    # LLM（AIの脳みそ）の呼び出しと設定
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
     chain = prompt_template | llm | StrOutputParser()
