@@ -194,7 +194,6 @@ if db_instance:
         st.warning(f"以下の不足事実を追記・修正してください:\n\n{st.session_state['fact_feedback']}")
         
         # 以前のクエリとフィードバックを結合して、編集可能なテキストエリアに表示
-        # **このエリアに入力された内容が、次のステップの最終クエリになります。**
         edited_query = st.text_area(
             "【不足事実を追記・修正してください】",
             value=st.session_state['original_query'] + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
@@ -205,9 +204,12 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
+        # ステップ1では空、ステップ3では確定したクエリを表示
+        current_display_value = original_query if st.session_state['current_step'] == 3 else ""
+        
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=initial_query if st.session_state['current_step'] == 1 else original_query, # ステップ3では確定したクエリを表示
+            value=current_display_value, # ステップ3では確定したクエリを表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query"
@@ -262,7 +264,7 @@ if db_instance:
 
             # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
             elif st.session_state['current_step'] == 2:
-                # 修正された最新のクエリを original_query に上書き保存する (👈 重要な修正)
+                # 修正された最新のクエリを original_query に上書き保存する
                 st.session_state['original_query'] = final_query_to_use 
                 st.session_state['current_step'] = 3
                 del st.session_state['fact_feedback']
@@ -273,8 +275,7 @@ if db_instance:
                 st.session_state['running'] = True
                 with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
                     try:
-                        # 最終的に使用するクエリは final_query_to_use
-                        # ステップ3では必ず最新の original_query を使用
+                        # 最終的に使用するクエリは st.session_state['original_query']
                         result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
                         
                         st.subheader("✅ 請求権と要件事実の構成")
