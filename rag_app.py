@@ -14,7 +14,8 @@ from langchain_core.output_parsers import StrOutputParser
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
-    st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
+    # 秘匿化されたキーがない場合はエラーで停止
+    st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。Web公開時のSecrets設定を確認してください。")
     st.stop() 
 
 KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
@@ -22,7 +23,52 @@ PERSIST_DIR = "chroma_db_cache"
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
-# (アクセス制限ロジックは削除されました。認証はStreamlit Cloudの設定に依存します。)
+# --- カスタムテーマ (見た目) の設定 ---
+st.markdown(
+    """
+    <style>
+    /* 全体設定: フォント、背景 */
+    .stApp {
+        background-color: #f0f2f6; /* 薄いグレーの背景 */
+        color: #262730; /* テキストの色 */
+        font-family: Arial, sans-serif;
+    }
+    /* サイドバーの設定 */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff; /* サイドバーを白に */
+    }
+    /* メインタイトル (H1) の設定 */
+    h1 {
+        color: #004d80; /* 深い青 */
+        border-bottom: 2px solid #e0e0e0;
+        padding-bottom: 10px;
+    }
+    /* プライマリボタンの色 (要件事実を自動作成する) */
+    .stButton>button {
+        background-color: #0066cc; /* 鮮やかな青 */
+        color: white;
+        border-radius: 8px;
+        border: none;
+        transition: background-color 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #0056b3; /* ホバーで少し暗く */
+    }
+    /* 情報メッセージ (事案の概要) */
+    [data-testid="stText"] {
+        border-left: 5px solid #004d80;
+        padding: 10px;
+        background-color: #f8f8ff;
+    }
+    /* 成功メッセージを非表示に (スマート表示) */
+    .stSuccess {
+        display: none; 
+    }
+    </style>
+    """, 
+    unsafe_allow_html=True
+)
+
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
@@ -36,32 +82,38 @@ def initialize_knowledge_base():
         try:
             embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             db = Chroma(persist_directory=PERSIST_DIR, embedding_function=embeddings_model)
+            # st.success のメッセージは削除 (スマート表示のため)
             return db
         except Exception as e:
             st.warning(f"キャッシュロード中にエラーが発生しました。再構築を試みます: {e}")
     
     # 既存DBがない場合、またはロード失敗した場合、新規作成ロジックへ
     try:
+        # TextLoaderで単一のファイルを読み込む
         loader = TextLoader(KNOWLEDGE_BASE_PATH, encoding="utf-8")
         all_documents = loader.load()
     except FileNotFoundError:
         return None 
 
     try:
+        # テキストの分割 (チャンキング)
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
         texts = text_splitter.split_documents(all_documents)
         
+        # 埋め込みモデル (タイムアウトを180秒に延長)
         embeddings_model = GoogleGenerativeAIEmbeddings(
             model="models/embedding-001",
             request_options={"timeout": 180}
         )
 
+        # ChromaDBの作成と永続化
         db = Chroma.from_documents(
             texts, 
             embeddings_model, 
             persist_directory=PERSIST_DIR
         )
-        db.persist()
+        db.persist() # 永続化を実行
+        # st.success のメッセージは削除 (スマート表示のため)
         return db
     except Exception as e:
         st.error(f"データベース構築中にエラーが発生しました: {e}")
@@ -127,6 +179,21 @@ def get_required_elements_from_rag(db, description):
 # ====================================================
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
+
+# --- キャッシュクリアボタンのロジック ---
+def clear_knowledge_cache():
+    # st.cache_resource のキャッシュをクリアし、アプリを再実行 (リブートと同じ効果)
+    st.cache_resource.clear()
+    st.rerun()
+
+# サイドバーに再構築ボタンを設置
+with st.sidebar:
+    st.markdown("### 🛠️ データベース管理")
+    if st.button("知識ベースを再構築/リロード", help="knowledge_base.txt を変更した後に押してください。"):
+        clear_knowledge_cache()
+    
+    st.markdown("---")
+
 
 # データベースの初期化
 db_instance = initialize_knowledge_base()
