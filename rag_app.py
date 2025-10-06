@@ -14,7 +14,6 @@ from langchain_core.output_parsers import StrOutputParser
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
-    # 秘匿化されたキーがない場合はエラーで停止
     st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop() 
 
@@ -94,7 +93,7 @@ def check_for_missing_facts(db, query):
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
     prompt = f"""
-    あなたは要件事実論の専門家です。以下の「事案」と「参照情報」を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している事実**または**曖昧な事実**を特定し、ユーザーに補完を促す文章を作成してください。
+    あなたは要件事実の専門家です。以下の「事案」と「参照情報」を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している事実**または**曖昧な事実**を特定し、ユーザーに補完を促す文章を作成してください。
     不足している事実がない場合は、**必ず**「OK」とだけ回答してください。
     
     【事案】
@@ -141,23 +140,25 @@ def get_required_elements_from_rag(db, description):
 # 2. Streamlitのウェブアプリ画面構築
 # ====================================================
 
-# --- アプリの状態管理 ---
-if 'current_step' not in st.session_state:
-    st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
-
-st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
-
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
     st.session_state['current_step'] = 1
     if 'original_query' in st.session_state:
         del st.session_state['original_query']
+    if 'fact_feedback' in st.session_state:
+        del st.session_state['fact_feedback']
     st.rerun()
 
-# --- キャッシュクリアボタンのロジック (メインページ内、隅へ) ---
+# --- キャッシュクリアボタンのロジック ---
 def clear_knowledge_cache():
     st.cache_resource.clear()
     st.rerun()
+
+# --- アプリの状態管理 ---
+if 'current_step' not in st.session_state:
+    st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
+
+st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
 
 # データベースの初期化
@@ -186,22 +187,31 @@ if db_instance:
     
     # ステップ2の場合、以前のクエリとフィードバックをテキストエリアに表示
     initial_query = st.session_state.get('original_query', "")
+    
     if st.session_state['current_step'] == 2:
+        # ステップ2の入力エリア
         st.subheader("💡 AIからのフィードバック")
-        st.warning(f"{st.session_state['fact_feedback']}")
-        initial_query = st.text_area(
+        st.warning(f"以下の不足事実を追記・修正してください:\n\n{st.session_state['fact_feedback']}")
+        
+        # 以前のクエリとフィードバックを結合して、編集可能なテキストエリアに表示
+        # **このエリアに入力された内容が、次のステップの最終クエリになります。**
+        edited_query = st.text_area(
             "【不足事実を追記・修正してください】",
-            value=st.session_state['fact_feedback'] + "\n\n--- 修正点 ---",
+            value=st.session_state['original_query'] + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
             height=350,
-            key="corrected_query"
+            key="edited_query_for_step2" # ステップ2専用のキー
         )
+        final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
+
     else:
+        # ステップ1と3の入力エリア
         initial_query = st.text_area(
             "【事案の概要を入力してください】",
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query"
         )
+        final_query_to_use = initial_query # ステップ1/3では入力内容をそのまま使用する
     
     # ----------------------------------------------------
     # ボタンとロジックの実行
@@ -215,8 +225,8 @@ if db_instance:
         button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
 
         if st.button(button_label, type="primary", disabled=is_running): 
-            if not initial_query:
-                st.warning("事案の概要を入力してください。")
+            if not final_query_to_use or final_query_to_use.strip() == "" or (st.session_state['current_step'] == 2 and final_query_to_use == st.session_state['original_query']):
+                st.warning("事案の概要を入力するか、不足事実を追記してください。")
                 st.session_state['running'] = False 
                 st.rerun()
 
@@ -224,7 +234,7 @@ if db_instance:
             if st.session_state['current_step'] == 1:
                 st.session_state['running'] = True
                 with st.spinner("ステップ1/3: 法律関連の事案かチェック中です..."):
-                    relevance = check_query_relevance(initial_query)
+                    relevance = check_query_relevance(final_query_to_use)
 
                 if relevance == "NO":
                     st.error("入力内容は法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
@@ -232,10 +242,10 @@ if db_instance:
                     st.rerun()
                 else:
                     # 法律関連と判断 -> Phase 2: 事実補完チェックへ
-                    st.session_state['original_query'] = initial_query
+                    st.session_state['original_query'] = final_query_to_use # オリジナルクエリを保存
                     st.session_state['running'] = True
                     with st.spinner("ステップ2/3: 不足事実のチェック中です..."):
-                        missing_facts = check_for_missing_facts(db_instance, initial_query) 
+                        missing_facts = check_for_missing_facts(db_instance, final_query_to_use) 
                     
                     st.session_state['running'] = False
                     
@@ -250,8 +260,9 @@ if db_instance:
 
             # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
             elif st.session_state['current_step'] == 2:
+                # 修正された最新のクエリを original_query に上書き保存する (👈 重要な修正)
+                st.session_state['original_query'] = final_query_to_use 
                 st.session_state['current_step'] = 3
-                st.session_state['original_query'] = initial_query # 修正されたクエリを保存
                 del st.session_state['fact_feedback']
                 st.rerun()
 
@@ -260,7 +271,8 @@ if db_instance:
                 st.session_state['running'] = True
                 with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
                     try:
-                        result = get_required_elements_from_rag(db_instance, initial_query)
+                        # 最終的に使用するクエリは final_query_to_use
+                        result = get_required_elements_from_rag(db_instance, final_query_to_use)
                         
                         st.subheader("✅ 請求権と要件事実の構成")
                         st.markdown(result)
@@ -273,13 +285,13 @@ if db_instance:
     
     # --- 2. 最初に戻るボタン ---
     with col_reset:
-        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) # メインボタンと高さを合わせる
+        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) 
         if st.button("最初に戻る", help="ワークフローをステップ1にリセットします。", use_container_width=True):
             reset_workflow()
 
     # --- 3. リロードボタン ---
     with col_reload:
-        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) # メインボタンと高さを合わせる
+        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
         if st.button("🔄 リロード", help="知識ベースファイルを更新した後に押してください。", use_container_width=True):
             clear_knowledge_cache()
 
