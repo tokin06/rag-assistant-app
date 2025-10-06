@@ -10,21 +10,41 @@ from langchain_core.output_parsers import StrOutputParser
 # ====================================================
 # 0. 設定と初期化 (APIキーの秘匿化)
 # ====================================================
-
 # ★★★ APIキーをst.secretsから安全に取得します ★★★
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
-    # 秘匿化されたキーがない場合はエラーで停止
     st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop() 
 
-KNOWLEDGE_BASE_PATH = "knowledge_base.txt" # 👈 ファイルパス (単一ファイル)
+KNOWLEDGE_BASE_PATH = "knowledge_base.txt" # 👈 ファイルパス (単一ファイルに統一)
 PERSIST_DIR = "chroma_db_cache"            # ChromaDBのキャッシュフォルダパス
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
-# (旧アクセス制限ロジックはここで削除されました)
+# ====================================================
+# 👈 アクセス制限ロジック (最終スマート版)
+# ====================================================
+ALLOWED_USERS = ["あなたの正確なメールアドレス@gmail.com"] 
+user_email = None
+try:
+    if st.user and st.user.email: 
+        user_email = st.user.email
+    elif st.experimental_user and st.experimental_user.email:
+        user_email = st.experimental_user.email
+except Exception:
+    pass
+
+IS_STREAMLIT_CLOUD = "STREAMLIT_SERVER_USER" in os.environ 
+
+if IS_STREAMLIT_CLOUD or ('localhost:' not in st.url and '127.0.0.1:' not in st.url):
+    if user_email not in ALLOWED_USERS:
+        st.error("🚨 アクセスが許可されていません。")
+        st.info("このアプリケーションは、特定のユーザーのみが利用可能です。Googleアカウントでログインしてください。")
+        st.stop()
+else:
+    st.warning("ローカル開発モードです。")
+# ====================================================
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
@@ -38,54 +58,47 @@ def initialize_knowledge_base():
         try:
             embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             db = Chroma(persist_directory=PERSIST_DIR, embedding_function=embeddings_model)
-            st.success("既存の知識データベースをロードしました！ (高速起動)")
+            # st.success のメッセージは削除 (画面に表示しない)
+            # st.session_state['kb_initialized'] = True は削除
             return db
         except Exception as e:
             st.warning(f"キャッシュロード中にエラーが発生しました。再構築を試みます: {e}")
     
     # 既存DBがない場合、またはロード失敗した場合、新規作成ロジックへ
     try:
-        # TextLoaderで単一のファイルを読み込む
         loader = TextLoader(KNOWLEDGE_BASE_PATH, encoding="utf-8")
         all_documents = loader.load()
     except FileNotFoundError:
-        st.error(f"エラー: 知識データベースファイルが見つかりません: {KNOWLEDGE_BASE_PATH}")
-        st.warning(f"ファイル '{KNOWLEDGE_BASE_PATH}' を作成し、中身を入れてください。") 
-        return None
-        
+        return None 
+
     try:
-        # テキストの分割 (チャンキング)
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
         texts = text_splitter.split_documents(all_documents)
         
-        # 埋め込みモデル (タイムアウトを180秒に延長)
         embeddings_model = GoogleGenerativeAIEmbeddings(
             model="models/embedding-001",
             request_options={"timeout": 180}
         )
 
-        # ChromaDBの作成と永続化
         db = Chroma.from_documents(
             texts, 
             embeddings_model, 
             persist_directory=PERSIST_DIR
         )
         db.persist() # 永続化を実行
-        st.success("知識データベースを新規作成し、キャッシュに保存しました！")
+        # st.success のメッセージは削除 (画面に表示しない)
+        # st.session_state['kb_initialized'] = True は削除
         return db
     except Exception as e:
         st.error(f"データベース構築中にエラーが発生しました: {e}")
         return None
 
-# RAGコアロジック
+# RAGコアロジック (変更なし)
 def get_required_elements_from_rag(db, description): 
-    """RAGを実行し、事案に対する要件事実の構成を返す"""
-    
-    # 記述内容に関連する情報をデータベースから検索（「本を探す」）
+    # ... (この関数は変更なし)
     docs = db.similarity_search(description, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
-    # AIに与える指示（プロンプト）を作成 (要件事実生成用プロンプト)
     prompt_template = ChatPromptTemplate.from_messages(
         [
             ("system", """
@@ -102,7 +115,6 @@ def get_required_elements_from_rag(db, description):
         ]
     )
 
-    # LLM（AIの脳みそ）の呼び出しと設定
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
     chain = prompt_template | llm | StrOutputParser()
@@ -117,9 +129,9 @@ st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
 # データベースの初期化
 db_instance = initialize_knowledge_base()
-
+    
 if db_instance:
-    st.success("知識データベースの準備が完了しました！要件事実の出力を開始できます。")
+    # データベースが正常にロードまたは構築された場合、画面を表示
     st.info("※事案の概要（いつ、誰が、何を、どうしたか）を詳細に入力してください。")
 
     contract_description = st.text_area(
@@ -142,4 +154,5 @@ if db_instance:
                 except Exception as e:
                     st.error(f"処理中にエラーが発生しました。詳細: {e}")
 else:
-    st.warning(f"データベースの初期化に失敗したため、アプリを起動できません。ファイル '{KNOWLEDGE_BASE_PATH}' の存在と中身を確認してください。")
+    # 失敗時のみ、詳細なエラーメッセージを表示
+    st.error(f"データベースの初期化に失敗しました。ファイル '{KNOWLEDGE_BASE_PATH}' の存在と中身を確認してください。")
