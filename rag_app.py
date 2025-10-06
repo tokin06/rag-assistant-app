@@ -186,7 +186,7 @@ if db_instance:
     # ----------------------------------------------------
     
     # ステップ2の場合、以前のクエリとフィードバックをテキストエリアに表示
-    initial_query = st.session_state.get('original_query', "")
+    original_query = st.session_state.get('original_query', "")
     
     if st.session_state['current_step'] == 2:
         # ステップ2の入力エリア
@@ -205,13 +205,15 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
-        initial_query = st.text_area(
+        current_query = st.text_area(
             "【事案の概要を入力してください】",
+            value=initial_query if st.session_state['current_step'] == 1 else original_query, # ステップ3では確定したクエリを表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query"
         )
-        final_query_to_use = initial_query # ステップ1/3では入力内容をそのまま使用する
+        final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
+        
     
     # ----------------------------------------------------
     # ボタンとロジックの実行
@@ -225,8 +227,8 @@ if db_instance:
         button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
 
         if st.button(button_label, type="primary", disabled=is_running): 
-            if not final_query_to_use or final_query_to_use.strip() == "" or (st.session_state['current_step'] == 2 and final_query_to_use == st.session_state['original_query']):
-                st.warning("事案の概要を入力するか、不足事実を追記してください。")
+            if not final_query_to_use or final_query_to_use.strip() == "":
+                st.warning("事案の概要を入力してください。")
                 st.session_state['running'] = False 
                 st.rerun()
 
@@ -272,7 +274,8 @@ if db_instance:
                 with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
                     try:
                         # 最終的に使用するクエリは final_query_to_use
-                        result = get_required_elements_from_rag(db_instance, final_query_to_use)
+                        # ステップ3では必ず最新の original_query を使用
+                        result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
                         
                         st.subheader("✅ 請求権と要件事実の構成")
                         st.markdown(result)
