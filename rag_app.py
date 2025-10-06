@@ -10,6 +10,7 @@ from langchain_core.output_parsers import StrOutputParser
 # ====================================================
 # 0. 設定と初期化 (APIキーの秘匿化)
 # ====================================================
+# ★★★ APIキーをst.secretsから安全に取得します ★★★
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
@@ -21,14 +22,14 @@ PERSIST_DIR = "chroma_db_cache"
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
-# (アクセス制限ロジックは省略 - Streamlit Cloudの設定に依存)
+# (アクセス制限ロジックは削除されました。認証はStreamlit Cloudの設定に依存します。)
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
 # ====================================================
 @st.cache_resource
 def initialize_knowledge_base():
-    # ... (この関数は変更なし)
+    """知識データベース（本棚）を初期化し、ChromaDBを返す"""
     
     # 既存のデータベースが存在するかチェック (高速ロード)
     if os.path.exists(PERSIST_DIR):
@@ -39,6 +40,7 @@ def initialize_knowledge_base():
         except Exception as e:
             st.warning(f"キャッシュロード中にエラーが発生しました。再構築を試みます: {e}")
     
+    # 既存DBがない場合、またはロード失敗した場合、新規作成ロジックへ
     try:
         loader = TextLoader(KNOWLEDGE_BASE_PATH, encoding="utf-8")
         all_documents = loader.load()
@@ -86,15 +88,15 @@ def check_query_relevance(query):
     
     try:
         response = llm.invoke(prompt)
-        # 回答から "Yes" または "No" の文字列を取得し、大文字に変換して返す
         return response.content.strip().upper()
     except Exception as e:
         st.warning(f"クエリ関連性チェック中にエラーが発生しました。スキップします。詳細: {e}")
         return "YES" # チェック失敗時は安全のため実行を許可
 
-# RAGコアロジック (変更なし)
+# RAGコアロジック
 def get_required_elements_from_rag(db, description): 
-    # ... (この関数は変更なし)
+    """RAGを実行し、事案に対する要件事実の構成を返す"""
+    
     docs = db.similarity_search(description, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
@@ -126,36 +128,24 @@ def get_required_elements_from_rag(db, description):
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
-# --- 開発フラグの定義 (ログ表示をクリーンにするため) ---
-IS_STREAMLIT_CLOUD = "STREAMLIT_SERVER_USER" in os.environ 
-
 # データベースの初期化
 db_instance = initialize_knowledge_base()
     
-# --- 成功メッセージの非表示ロジック (スマート表示) ---
 if db_instance:
     # データベースが正常にロードまたは構築された場合、画面を表示
     
-    # 成功メッセージの表示 (スマート表示)
-    if not IS_STREAMLIT_CLOUD:
-        # ローカル開発時にのみ成功を警告として表示
-        st.warning("ローカル開発モードです。Web公開時はアクセス制限がかかります。")
-    # Web公開時は st.success は表示しない (代わりに st.info を使用)
+    st.info("※事案の概要（いつ、誰が何をどうしたか）を詳細に入力してください。")
     
-    st.info("※事案の概要（いつ、誰が、何を、どうしたか）を詳細に入力してください。")
-    
-    # ... (中略：入力エリア)
+    if 'running' not in st.session_state:
+        st.session_state['running'] = False 
+    is_running = st.session_state['running']
+
     contract_description = st.text_area(
         "【事案の概要】を記述してください。",
         height=300,
         placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。"
     )
     
-    # --- 乱用防止ロジック ---
-    if 'running' not in st.session_state:
-        st.session_state['running'] = False 
-    is_running = st.session_state['running']
-
     if st.button("📝 要件事実を自動作成する", type="primary", disabled=is_running): 
         if not contract_description:
             st.warning("事案の概要を入力してください。")
