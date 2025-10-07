@@ -1,7 +1,7 @@
 import streamlit as st
 import os
+from langchain.text_splitter import RecursiveCharacterTextSplitter # RecursiveCharacterTextSplitterを使用
 from langchain_community.document_loaders import TextLoader 
-from langchain.text_splitter import CharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
@@ -14,6 +14,7 @@ from langchain_core.output_parsers import StrOutputParser
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
+    # 秘匿化されたキーがない場合はエラーで停止
     st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop() 
 
@@ -21,6 +22,59 @@ KNOWLEDGE_BASE_PATH = "knowledge_base.txt"
 PERSIST_DIR = "chroma_db_cache"            
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
+
+# --- カスタムCSS (視認性向上) の再定義 ---
+st.markdown(
+    """
+    <style>
+    /* 全体設定: フォントを読みやすく */
+    .stApp {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    /* メインタイトル (H1) の視覚的区切り */
+    h1 {
+        color: #333333; /* 落ち着いたダークグレー */
+        border-bottom: 3px solid #0078D4; /* Microsoft系の爽やかな青線 */
+        padding-bottom: 5px;
+    }
+
+    /* 情報ボックス (st.info) のデザイン */
+    .stAlert {
+        border-radius: 8px;
+        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.1);
+    }
+
+    /* プライマリボタン (最終生成ボタン) の設定 */
+    .stButton>button {
+        background-color: #0078D4; /* 鮮やかな青 */
+        color: white;
+        font-weight: bold;
+        border-radius: 6px;
+        border: none;
+        transition: background-color 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #005A9E; 
+    }
+    
+    /* セカンダリボタン (最初に戻る、リロード) の調整 */
+    .stButton:not(.stButton>button[type="primary"])>button {
+        background-color: #f0f0f0;
+        color: #333333;
+        border: 1px solid #cccccc;
+    }
+
+    /* 実行結果 (subheader) の区切り */
+    h2 {
+        border-left: 5px solid #0078D4;
+        padding-left: 10px;
+        margin-top: 25px;
+    }
+    </style>
+    """, 
+    unsafe_allow_html=True
+)
 
 # ====================================================
 # 1. RAGの「本棚」構築機能（単一ファイル対応とキャッシュ永続化付き）
@@ -44,7 +98,14 @@ def initialize_knowledge_base():
         return None 
 
     try:
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+        # --- チャンキング最適化 ---
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500000,        # 50万文字 (実質無制限)
+            chunk_overlap=0,          
+            separators=["\n\n", "。", "、", "\n", " ", ""], # 句読点、改行、スペースを優先
+            length_function=len,
+            is_separator_regex=False
+        )
         texts = text_splitter.split_documents(all_documents)
         
         embeddings_model = GoogleGenerativeAIEmbeddings(
@@ -82,7 +143,7 @@ def check_query_relevance(query):
         return response.content.strip().upper()
     except Exception as e:
         st.warning(f"クエリ関連性チェック中にエラーが発生しました。スキップします。詳細: {e}")
-        return "YES" 
+        return "YES" # チェック失敗時は安全のため実行を許可
 
 def check_for_missing_facts(db, query):
     """要件事実の作成に足りない事実があるかチェックし、足りない事実を返す (ステップ2: 事実補完)"""
@@ -143,6 +204,13 @@ def get_required_elements_from_rag(db, description):
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
     st.session_state['current_step'] = 1
+    
+    # 👈 【最重要修正】入力値のリセットを追加
+    # テキストエリアの値を空にする
+    st.session_state['initial_query'] = "" 
+    st.session_state['edited_query_for_step2'] = "" 
+
+    # その他の状態変数をクリア
     if 'original_query' in st.session_state:
         del st.session_state['original_query']
     if 'fact_feedback' in st.session_state:
@@ -196,7 +264,7 @@ if db_instance:
         # 以前のクエリとフィードバックを結合して、編集可能なテキストエリアに表示
         edited_query = st.text_area(
             "【不足事実を追記・修正してください】",
-            value=st.session_state['original_query'] + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
+            value=original_query + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
             height=350,
             key="edited_query_for_step2" # ステップ2専用のキー
         )
@@ -204,12 +272,13 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
-        # ステップ1では空、ステップ3では確定したクエリを表示
-        current_display_value = original_query if st.session_state['current_step'] == 3 else ""
+        # ステップ3では確定したクエリを表示
+        # st.session_state['initial_query']に値が入っている場合は、それを初期値として使用
+        current_display_value = st.session_state.get('initial_query', "")
         
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=current_display_value, # ステップ3では確定したクエリを表示
+            value=current_display_value, 
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query"
@@ -285,7 +354,7 @@ if db_instance:
                         st.error(f"処理中にエラーが発生しました。詳細: {e}")
                     finally:
                         st.session_state['running'] = False
-                        st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻す
+                        st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻る
     
     # --- 2. 最初に戻るボタン ---
     with col_reset:
