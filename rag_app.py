@@ -205,9 +205,11 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 【最終修正】入力値の完全クリアロジック: original_queryとedited_query_for_step2を空にする
+    # 【最重要修正】入力値の完全クリアロジック: 
+    # セッションステートに値を空文字列で上書きし、画面表示もリセットする
     st.session_state['original_query'] = "" 
     st.session_state['edited_query_for_step2'] = "" 
+    st.session_state['initial_query'] = "" # initial_query キーも忘れずにリセット
 
     # その他の状態変数をクリア
     if 'fact_feedback' in st.session_state:
@@ -224,6 +226,8 @@ if 'current_step' not in st.session_state:
     st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
 if 'original_query' not in st.session_state:
     st.session_state['original_query'] = "" # 全てのステップで参照する「真実の源」を初期化
+if 'initial_query' not in st.session_state:
+    st.session_state['initial_query'] = "" # ステップ1のテキストエリアの値を保持
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
