@@ -203,10 +203,18 @@ def get_required_elements_from_rag(db, description):
 
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
-    # 【最終修正】JavaScriptを注入し、ブラウザを強制的にリロードする
-    js = "window.location.reload();"
-    html = f'<script>{js}</script>'
-    st.components.v1.html(html)
+    # 【最重要修正】入力値の完全クリアロジック: 
+    # セッションステートの値を空にする
+    st.session_state['original_query'] = "" 
+    
+    # ワークフローを初期化
+    keys_to_delete = ['current_step', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'running']
+    for key in keys_to_delete:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # st.rerun() でページ全体を再実行し、ブラウザの入力欄もクリアする
+    st.rerun() 
 
 # --- キャッシュクリアボタンのロジック ---
 def clear_knowledge_cache():
