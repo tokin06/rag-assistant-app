@@ -205,13 +205,14 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 【修正】入力値を空にする
-    st.session_state['input_query'] = "" 
-    st.session_state['edited_query_for_step2'] = "" 
+    # 【最終修正】original_queryを空にして、すべての入力をリセット
+    if 'original_query' in st.session_state:
+        st.session_state['original_query'] = "" 
+    if 'edited_query_for_step2' in st.session_state:
+        st.session_state['edited_query_for_step2'] = "" 
+    # initial_query は text_area のキーなので、original_queryを空にすれば連動して空になる
 
     # その他の状態変数をクリア
-    if 'original_query' in st.session_state:
-        del st.session_state['original_query']
     if 'fact_feedback' in st.session_state:
         del st.session_state['fact_feedback']
     st.rerun()
@@ -224,8 +225,8 @@ def clear_knowledge_cache():
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
     st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
-if 'input_query' not in st.session_state:
-    st.session_state['input_query'] = "" # メイン入力エリアの値を保持するための初期化
+if 'original_query' not in st.session_state:
+    st.session_state['original_query'] = "" # 全てのステップで参照する「真実の源」を初期化
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
@@ -251,10 +252,9 @@ if db_instance:
 
 
     # ----------------------------------------------------
-    # メイン入力エリア (ステップ 1 & 2)
+    # メイン入力エリア (ステップ 1 & 2 & 3)
     # ----------------------------------------------------
     
-    # ステップ2の場合、以前のクエリとフィードバックをテキストエリアに表示
     original_query = st.session_state.get('original_query', "")
     
     if st.session_state['current_step'] == 2:
@@ -272,14 +272,14 @@ if db_instance:
         final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
 
     else:
-        # ステップ1と3の入力エリア
+        # 【最終修正箇所】ステップ1と3の入力エリア: original_queryを直接読み書き
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=st.session_state.get('input_query', ''), # セッションに保存された値を表示
+            value=original_query, # original_query の値を表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query",
-            on_change=lambda: st.session_state.update(input_query=st.session_state.initial_query) # 入力時にセッションに値を保存
+            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query) # 入力時に original_query に値を保存
         )
         final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
         
@@ -332,7 +332,7 @@ if db_instance:
             # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
             elif st.session_state['current_step'] == 2:
                 # 修正された最新のクエリを original_query に上書き保存する
-                st.session_state['original_query'] = final_query_to_use 
+                st.session_state['original_query'] = final_query_to_use # 👈 ステップ2で編集された内容がここで上書きされる
                 st.session_state['current_step'] = 3
                 del st.session_state['fact_feedback']
                 st.rerun()
