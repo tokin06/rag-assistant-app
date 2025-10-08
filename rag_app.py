@@ -205,10 +205,8 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 【最終修正】入力値の完全クリアロジック
-    # original_query, initial_query, edited_query_for_step2 の値を空にする
+    # 【最終修正】入力値の完全クリアロジック: original_queryとedited_query_for_step2を空にする
     st.session_state['original_query'] = "" 
-    st.session_state['initial_query'] = "" 
     st.session_state['edited_query_for_step2'] = "" 
 
     # その他の状態変数をクリア
@@ -272,15 +270,15 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
-        # st.session_state['initial_query']の値を表示
+        # 入力エリアの値は常に original_query を表示
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=st.session_state.get('initial_query', ""), 
+            value=original_query, # original_query の値を表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query",
-            # 入力時に original_query と initial_query に値を保存
-            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query, initial_query=st.session_state.initial_query) 
+            # 入力時に original_query に値を保存 (on_changeで保存することで、リセット時の上書きを防ぐ)
+            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query) 
         )
         final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
         
