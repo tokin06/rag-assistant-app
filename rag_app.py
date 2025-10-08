@@ -210,9 +210,9 @@ def reset_workflow():
     st.session_state['original_query'] = "" 
     st.session_state['edited_query_for_step2'] = "" 
     
-    # Textareaのキー値を保持するセッションステートをクリア
+    # Textareaのキー自体をリセットし、画面上の値を強制的にクリアする
     st.session_state['initial_query'] = "" 
-
+    
     # その他の状態変数をクリア
     if 'fact_feedback' in st.session_state:
         del st.session_state['fact_feedback']
