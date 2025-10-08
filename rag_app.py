@@ -1,6 +1,7 @@
 import streamlit as st
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter # RecursiveCharacterTextSplitterを使用
+import uuid # 👈 新しくインポート: ランダムなIDを生成するため
+from langchain.text_splitter import RecursiveCharacterTextSplitter 
 from langchain_community.document_loaders import TextLoader 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
@@ -203,11 +204,17 @@ def get_required_elements_from_rag(db, description):
 
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
-    # ワークフローの状態だけをリセットし、入力ウィジェットは st.rerun() で初期化されることに頼る
-    keys_to_delete = ['current_step', 'original_query', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'running']
+    # Streamlitのバグ回避のため、セッションステートをクリアし、キーを強制更新
+    st.session_state['current_step'] = 1
+    
+    # ワークフローに必要なキーを削除
+    keys_to_delete = ['original_query', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'running']
     for key in keys_to_delete:
         if key in st.session_state:
             del st.session_state[key]
+    
+    # 【最重要修正】入力ウィジェットのキーを更新し、新しい空のウィジェットを強制描画させる
+    st.session_state['input_key'] = str(uuid.uuid4())
     
     st.rerun() 
 
@@ -221,6 +228,8 @@ if 'current_step' not in st.session_state:
     st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
 if 'original_query' not in st.session_state:
     st.session_state['original_query'] = "" # 全てのステップで参照する「真実の源」を初期化
+if 'input_key' not in st.session_state:
+    st.session_state['input_key'] = str(uuid.uuid4()) # 入力ウィジェットのキーを初期化
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
@@ -267,16 +276,16 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
-        # 入力エリアの値は常に original_query を表示
+        # 【最終修正】キーをランダム化し、リセット時に新しい空の入力欄を強制描画させる
         current_query = st.text_area(
             "【事案の概要を入力してください】",
             value=original_query, # original_query の値を表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
-            key="initial_query",
-            # 入力時に original_query に値を保存 (on_changeで保存することで、リセット時の上書きを防ぐ)
-            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query) 
+            key=st.session_state['input_key'], # ランダムなキーを使用
         )
+        # 入力された値を original_query にバインド
+        st.session_state['original_query'] = current_query 
         final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
         
     
