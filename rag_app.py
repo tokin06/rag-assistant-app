@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter 
+from langchain.text_splitter import RecursiveCharacterTextSplitter # RecursiveCharacterTextSplitterを使用
 from langchain_community.document_loaders import TextLoader 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
@@ -205,17 +205,13 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 【最終修正】入力値の完全クリアロジック: 
-    # original_query, initial_query, edited_query_for_step2 の値を空にする
-    st.session_state['original_query'] = "" 
-    st.session_state['edited_query_for_step2'] = "" 
-
-    # Textareaのキー自体をリセットし、画面上の値を強制的にクリアする
-    st.session_state['initial_query'] = "" 
-
-    # その他の状態変数をクリア
-    if 'fact_feedback' in st.session_state:
-        del st.session_state['fact_feedback']
+    # 【最終修正】セッション全体をクリアして、アプリを初期状態に戻す
+    # st.rerun() だけで十分ですが、明示的にセッションもクリアすることで整合性を保ちます。
+    keys_to_delete = ['original_query', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'current_step', 'running']
+    for key in keys_to_delete:
+        if key in st.session_state:
+            del st.session_state[key]
+    
     st.rerun()
 
 # --- キャッシュクリアボタンのロジック ---
