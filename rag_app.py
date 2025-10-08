@@ -61,7 +61,7 @@ st.markdown(
         background-color: #005A9E; 
     }
     
-    /* セカンダリボタン (最初に戻る、リロード) の調整 */
+    /* セカンダリボタン (最初に戻る) の調整 - リロードボタン削除に伴い調整 */
     .stButton:not(.stButton>button[type="primary"])>button {
         background-color: #f0f0f0;
         color: #333333;
@@ -246,9 +246,7 @@ def reset_workflow():
     st.rerun() 
 
 # --- キャッシュクリアボタンのロジック ---
-def clear_knowledge_cache():
-    st.cache_resource.clear()
-    st.rerun()
+# clear_knowledge_cache() 関数は削除しました。
 
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
@@ -322,7 +320,8 @@ if db_instance:
     # ----------------------------------------------------
     
     # ボタン配置: メインボタンとユーティリティボタンを横並びにする
-    col_main, col_reset, col_reload = st.columns([0.65, 0.20, 0.15]) 
+    # リロードボタン削除に伴い、コラムを [メイン, リセット] の2つに変更
+    col_main, col_reset = st.columns([0.75, 0.25]) 
 
     # --- 1. メインボタン ---
     with col_main:
@@ -416,11 +415,7 @@ if db_instance:
             reset_workflow()
 
     # --- 3. リロードボタン ---
-    with col_reload:
-        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 リロード", help="知識ベースファイルを更新した後に押してください。", use_container_width=True):
-            clear_knowledge_cache()
-
+    # リロードボタンのUI要素は削除しました。
 
 else:
     # 失敗時のみ、詳細なエラーメッセージを表示
