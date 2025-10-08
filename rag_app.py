@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-import uuid # 👈 新しくインポート: ランダムなIDを生成するため
+import uuid
 from langchain.text_splitter import RecursiveCharacterTextSplitter 
 from langchain_community.document_loaders import TextLoader 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -20,7 +20,9 @@ else:
     st.stop() 
 
 KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
-PERSIST_DIR = "chroma_db_cache"            
+PERSIST_DIR = "chroma_db_cache" 
+# 【セキュリティ修正1: リソース乱用対策】入力の最大文字数を設定
+MAX_INPUT_LENGTH = 15000 # 15,000文字に制限 (必要に応じて調整可能)
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
@@ -101,8 +103,8 @@ def initialize_knowledge_base():
     try:
         # --- チャンキング最適化 ---
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500000,        # 50万文字 (実質無制限)
-            chunk_overlap=0,          
+            chunk_size=500000,          # 50万文字 (実質無制限)
+            chunk_overlap=0,            
             separators=["\n\n", "。", "、", "\n", " ", ""], # 句読点、改行、スペースを優先
             length_function=len,
             is_separator_regex=False
@@ -129,19 +131,43 @@ def initialize_knowledge_base():
 # 1.5. ユーティリティ機能
 # ====================================================
 
+# 【セキュリティ修正2: プロンプトインジェクション対策】
+def create_safe_prompt(system_instruction, user_query, context=""):
+    """ユーザー入力を明確なデリミタで囲んだ安全なプロンプトを生成する"""
+    
+    base_prompt = f"""
+    {system_instruction}
+
+    ---
+    【参照情報】
+    {context}
+    ---
+
+    【ユーザーが指定した事案】
+    ***START_OF_USER_QUERY***
+    {user_query}
+    ***END_OF_USER_QUERY***
+    """
+    return base_prompt
+
 @st.cache_data(ttl=600)
 def check_query_relevance(query):
     """入力されたクエリが法律関連の事案であるかをAIに判定させる (ステップ1: ガードレール)"""
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0) 
-    prompt = f"""
-    以下のユーザー入力は、**法的な紛争や主張**に関連する「事案の記述」ですか？
+    
+    system_instruction = """
+    あなたは入力されたテキストを分類するAIです。以下のユーザー入力は、**法的な紛争や主張**に関連する「事案の記述」ですか？
     全く関係のない雑談、レシピ、プログラミングコード、または意味のないランダムな文字列である場合は「No」とだけ回答してください。
     それ以外の場合は「Yes」とだけ回答してください。
-    ユーザー入力："{query}"
+    回答は「Yes」または「No」のみを厳守してください。
     """
+    
+    prompt = create_safe_prompt(system_instruction, query)
+    
     try:
         response = llm.invoke(prompt)
-        return response.content.strip().upper()
+        # LLMの出力からデリミタを取り除く可能性のある文字をクリーンアップ
+        return response.content.strip().upper().replace("*", "").replace("`", "")
     except Exception as e:
         st.warning(f"クエリ関連性チェック中にエラーが発生しました。スキップします。詳細: {e}")
         return "YES" # チェック失敗時は安全のため実行を許可
@@ -154,20 +180,17 @@ def check_for_missing_facts(db, query):
 
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
-    prompt = f"""
-    あなたは要件事実の専門家です。以下の「事案」と「参照情報」を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している事実**または**曖昧な事実**を特定し、ユーザーに補完を促す文章を作成してください。
+    system_instruction = """
+    あなたは要件事実の専門家です。提供された参照情報に基づき、ユーザーが指定した事案を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している事実**または**曖昧な事実**を特定し、ユーザーに補完を促す文章を作成してください。
     不足している事実がない場合は、**必ず**「OK」とだけ回答してください。
-    
-    【事案】
-    {query}
-    
-    【参照情報】
-    {context}
-    
-    【回答の例】
-    ・不足している事実：原告が損害を受けた具体的な金額を追記してください。
-    ・OK
     """
+    
+    prompt = create_safe_prompt(
+        system_instruction, 
+        query, 
+        context
+    )
+    
     try:
         response = llm.invoke(prompt)
         return response.content.strip()
@@ -182,13 +205,17 @@ def get_required_elements_from_rag(db, description):
     docs = db.similarity_search(description, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
+    # プロンプトテンプレートを LangChain の形式で安全に定義
     prompt_template = ChatPromptTemplate.from_messages(
         [
             ("system", """
-            あなたは要件事実論の専門家AIです。法的正確性を最優先してください。提供された事案と参照情報に基づいて、以下のタスクを実行してください。
+            あなたは要件事実論の専門家AIです。法的正確性を最優先してください。提供された参照情報と【ユーザーが指定した事案】に基づいて、以下のタスクを実行してください。
             【タスク】1. 請求の趣旨を特定する。2. 最も適切な訴訟物（請求権）を特定する。3. その訴訟物に必要な要件事実を明確な箇条書きで抽出・作成する。4. 抗弁、再抗弁があれば作成する。5. 参照した法令や判例を最後に明記する。
+            参照情報は以下の通りです：
+            {context}
             """),
-            ("user", "以下の事案について、必要な要件事実を自動作成してください。\n\n事案:\n{contract_description}\n\n参照情報:\n{context}"),
+            # ユーザー入力はデリミタで囲まれた事案として渡す
+            ("user", "以下の事案について、必要な要件事実を自動作成してください。\n\n【ユーザーが指定した事案】\n***START_OF_USER_QUERY***\n{contract_description}\n***END_OF_USER_QUERY***"),
         ]
     )
 
@@ -213,7 +240,7 @@ def reset_workflow():
         if key in st.session_state:
             del st.session_state[key]
     
-    # 【最重要修正】入力ウィジェットのキーを更新し、新しい空のウィジェットを強制描画させる
+    # 入力ウィジェットのキーを更新し、新しい空のウィジェットを強制描画させる
     st.session_state['input_key'] = str(uuid.uuid4())
     
     st.rerun() 
@@ -225,7 +252,7 @@ def clear_knowledge_cache():
 
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
-    st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
+    st.session_state['current_step'] = 1 
 if 'original_query' not in st.session_state:
     st.session_state['original_query'] = "" # 全てのステップで参照する「真実の源」を初期化
 if 'input_key' not in st.session_state:
@@ -270,19 +297,20 @@ if db_instance:
             "【不足事実を追記・修正してください】",
             value=original_query + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
             height=350,
-            key="edited_query_for_step2" # ステップ2専用のキー
+            key="edited_query_for_step2", # ステップ2専用のキー
+            max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
         )
         final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
 
     else:
         # ステップ1と3の入力エリア
-        # 【最終修正】キーをランダム化し、リセット時に新しい空の入力欄を強制描画させる
         current_query = st.text_area(
             "【事案の概要を入力してください】",
             value=original_query, # original_query の値を表示
             height=300,
-            placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
+            placeholder=f"例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。\n\n（最大{MAX_INPUT_LENGTH}文字）",
             key=st.session_state['input_key'], # ランダムなキーを使用
+            max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
         )
         # 入力された値を original_query にバインド
         st.session_state['original_query'] = current_query 
@@ -301,11 +329,17 @@ if db_instance:
         button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
 
         if st.button(button_label, type="primary", disabled=is_running): 
+            
+            # 【セキュリティ修正1: リソース乱用対策】入力長チェック
             if not final_query_to_use or final_query_to_use.strip() == "":
                 st.warning("事案の概要を入力してください。")
                 st.session_state['running'] = False 
                 st.rerun()
-
+            elif len(final_query_to_use) > MAX_INPUT_LENGTH:
+                 st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
+                 st.session_state['running'] = False
+                 st.stop() # 長すぎる場合は強制停止
+            
             # Phase 1: ガードレールチェック
             if st.session_state['current_step'] == 1:
                 st.session_state['running'] = True
@@ -332,12 +366,12 @@ if db_instance:
                         # 不足事実あり -> Phase 2でフィードバック待ち
                         st.session_state['current_step'] = 2
                         st.session_state['fact_feedback'] = missing_facts
-                st.rerun() # 画面を更新して次のステップへ
+                    st.rerun() # 画面を更新して次のステップへ
 
             # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
             elif st.session_state['current_step'] == 2:
                 # 修正された最新のクエリを original_query に上書き保存する
-                st.session_state['original_query'] = final_query_to_use # 👈 ステップ2で編集された内容がここで上書きされる
+                st.session_state['original_query'] = final_query_to_use 
                 
                 # ユーザーが修正を完了したため、再度チェックを行う (二重チェック)
                 st.session_state['running'] = True
