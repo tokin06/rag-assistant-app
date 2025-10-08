@@ -203,7 +203,7 @@ def get_required_elements_from_rag(db, description):
 
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
-    # JavaScriptを注入し、ブラウザを強制的にリロードする
+    # 【最終修正】JavaScriptを注入し、ブラウザを強制的にリロードする
     js = "window.location.reload();"
     html = f'<script>{js}</script>'
     st.components.v1.html(html)
