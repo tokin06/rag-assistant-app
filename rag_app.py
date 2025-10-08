@@ -205,9 +205,8 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 👈 【最重要修正】入力値のリセットを追加
-    # テキストエリアの値を空にする
-    st.session_state['initial_query'] = "" 
+    # 【修正】入力値を空にする
+    st.session_state['input_query'] = "" 
     st.session_state['edited_query_for_step2'] = "" 
 
     # その他の状態変数をクリア
@@ -225,6 +224,8 @@ def clear_knowledge_cache():
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
     st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
+if 'input_query' not in st.session_state:
+    st.session_state['input_query'] = "" # メイン入力エリアの値を保持するための初期化
 
 st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
@@ -272,16 +273,13 @@ if db_instance:
 
     else:
         # ステップ1と3の入力エリア
-        # ステップ3では確定したクエリを表示
-        # st.session_state['initial_query']に値が入っている場合は、それを初期値として使用
-        current_display_value = st.session_state.get('initial_query', "")
-        
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=current_display_value, 
+            value=st.session_state.get('input_query', ''), # セッションに保存された値を表示
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
-            key="initial_query"
+            key="initial_query",
+            on_change=lambda: st.session_state.update(input_query=st.session_state.initial_query) # 入力時にセッションに値を保存
         )
         final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
         
