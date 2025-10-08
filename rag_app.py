@@ -205,12 +205,11 @@ def get_required_elements_from_rag(db, description):
 def reset_workflow():
     st.session_state['current_step'] = 1
     
-    # 【最終修正】original_queryを空にして、すべての入力をリセット
-    if 'original_query' in st.session_state:
-        st.session_state['original_query'] = "" 
-    if 'edited_query_for_step2' in st.session_state:
-        st.session_state['edited_query_for_step2'] = "" 
-    # initial_query は text_area のキーなので、original_queryを空にすれば連動して空になる
+    # 【最終修正】入力値の完全クリアロジック
+    # original_query, initial_query, edited_query_for_step2 の値を空にする
+    st.session_state['original_query'] = "" 
+    st.session_state['initial_query'] = "" 
+    st.session_state['edited_query_for_step2'] = "" 
 
     # その他の状態変数をクリア
     if 'fact_feedback' in st.session_state:
@@ -272,14 +271,16 @@ if db_instance:
         final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
 
     else:
-        # 【最終修正箇所】ステップ1と3の入力エリア: original_queryを直接読み書き
+        # ステップ1と3の入力エリア
+        # st.session_state['initial_query']の値を表示
         current_query = st.text_area(
             "【事案の概要を入力してください】",
-            value=original_query, # original_query の値を表示
+            value=st.session_state.get('initial_query', ""), 
             height=300,
             placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key="initial_query",
-            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query) # 入力時に original_query に値を保存
+            # 入力時に original_query と initial_query に値を保存
+            on_change=lambda: st.session_state.update(original_query=st.session_state.initial_query, initial_query=st.session_state.initial_query) 
         )
         final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
         
@@ -333,9 +334,25 @@ if db_instance:
             elif st.session_state['current_step'] == 2:
                 # 修正された最新のクエリを original_query に上書き保存する
                 st.session_state['original_query'] = final_query_to_use # 👈 ステップ2で編集された内容がここで上書きされる
-                st.session_state['current_step'] = 3
-                del st.session_state['fact_feedback']
-                st.rerun()
+                
+                # ユーザーが修正を完了したため、再度チェックを行う (二重チェック)
+                st.session_state['running'] = True
+                with st.spinner("ステップ2/3: 修正された事案で不足事実を再チェック中です..."):
+                    missing_facts_recheck = check_for_missing_facts(db_instance, final_query_to_use)
+                
+                st.session_state['running'] = False
+                
+                if "OK" in missing_facts_recheck.upper():
+                    # 再チェックでOKが出た -> Phase 3へ
+                    st.session_state['current_step'] = 3
+                    del st.session_state['fact_feedback'] # フィードバックをクリア
+                else:
+                    # まだ不足あり -> 再度ステップ2にとどまり、新しいフィードバックを表示
+                    st.session_state['current_step'] = 2
+                    st.session_state['fact_feedback'] = missing_facts_recheck # 新しいフィードバックを保存
+                    st.error("まだ不足している事実があります。AIの指摘を参考に再度追記してください。")
+
+                st.rerun() # 画面を更新
 
             # Phase 3: 最終生成
             elif st.session_state['current_step'] == 3:
