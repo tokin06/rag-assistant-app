@@ -22,7 +22,7 @@ else:
 KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
 PERSIST_DIR = "chroma_db_cache" 
 # 【セキュリティ修正1: リソース乱用対策】入力の最大文字数を設定
-MAX_INPUT_LENGTH = 15000 # 15,000文字に制限 (必要に応じて調整可能)
+MAX_INPUT_LENGTH = 1500 # 1500文字に制限 (必要に応じて調整可能)
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
@@ -103,7 +103,7 @@ def initialize_knowledge_base():
     try:
         # --- チャンキング最適化 ---
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500000,          # 50万文字 (実質無制限)
+            chunk_size=5000,          # 5000文字 (実質無制限)
             chunk_overlap=0,            
             separators=["\n\n", "。", "、", "\n", " ", ""], # 句読点、改行、スペースを優先
             length_function=len,
@@ -182,7 +182,7 @@ def check_for_missing_facts(db, query):
     
     system_instruction = """
     あなたは要件事実の専門家です。提供された参照情報に基づき、ユーザーが指定した事案を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している事実**または**曖昧な事実**を特定し、ユーザーに補完を促す文章を作成してください。
-    不足している事実がない場合は、**必ず**「OK」とだけ回答してください。
+    不足している事実、もしくは曖昧な事実がない場合は、**必ず**「OK」とだけ回答してください。
     """
     
     prompt = create_safe_prompt(
@@ -210,7 +210,7 @@ def get_required_elements_from_rag(db, description):
         [
             ("system", """
             あなたは要件事実論の専門家AIです。法的正確性を最優先してください。提供された参照情報と【ユーザーが指定した事案】に基づいて、以下のタスクを実行してください。
-            【タスク】1. 請求の趣旨を特定する。2. 最も適切な訴訟物（請求権）を特定する。3. その訴訟物に必要な要件事実を明確な箇条書きで抽出・作成する。4. 抗弁、再抗弁があれば作成する。5. 参照した法令や判例を最後に明記する。
+            【タスク】1. 請求の趣旨を特定する。2. 最も適切な訴訟物（請求権）を特定する。3. その訴訟物に必要な要件事実（末尾のよって書きを含む）を明確な箇条書きで抽出・作成する。4. 抗弁、再抗弁があれば作成する。5. 参照した法令や判例を最後に明記する。
             参照情報は以下の通りです：
             {context}
             """),
@@ -258,7 +258,7 @@ if 'original_query' not in st.session_state:
 if 'input_key' not in st.session_state:
     st.session_state['input_key'] = str(uuid.uuid4()) # 入力ウィジェットのキーを初期化
 
-st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
+st.title("⚖️ 要件事実 自動作成アシスタント")
 
 
 # データベースの初期化
@@ -308,7 +308,7 @@ if db_instance:
             "【事案の概要を入力してください】",
             value=original_query, # original_query の値を表示
             height=300,
-            placeholder=f"例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。\n\n（最大{MAX_INPUT_LENGTH}文字）",
+            placeholder=f"例：\nＸの言い分\n私は、令和６年４月６日に、父Ａから相続して私が所有していた甲土地を、是非欲しいと言ってきた友人のＹに売りました。代金は２０００万円で、支払日は令和６年５月６日の約束で、同年４月６日にＹに甲土地を引き渡しました。ところが、Ｙは、いろいろと文句を言ってその代金を支払ってくれません。そこで、上記売買契約に基づいて代金２０００万円の支払を求めます。\n\nＹの言い分\n甲土地を売買することについては私もＸも異論がなかったのですが、結局、代金額について折り合いがつきませんでした。甲土地は、Ｘが相続で取得したのではなく、Ｘの叔父Ｂから贈与されたもののはずですから、Ｘは嘘をついています。　\n\n（最大{MAX_INPUT_LENGTH}文字）",
             key=st.session_state['input_key'], # ランダムなキーを使用
             max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
         )
