@@ -49,7 +49,7 @@ st.markdown(
     }
 
     /* プライマリボタン (最終生成ボタン) の設定 */
-    .stButton>button {
+    .stButton>button[type="primary"] {
         background-color: #0078D4; /* 鮮やかな青 */
         color: white;
         font-weight: bold;
@@ -57,15 +57,17 @@ st.markdown(
         border: none;
         transition: background-color 0.3s;
     }
-    .stButton>button:hover {
+    .stButton>button[type="primary"]:hover {
         background-color: #005A9E; 
     }
     
-    /* セカンダリボタン (最初に戻る) の調整 - リロードボタン削除に伴い調整 */
-    .stButton:not(.stButton>button[type="primary"])>button {
+    /* セカンダリボタン (最初に戻る, 強制スキップ) の調整 */
+    .stButton>button:not([type="primary"]) {
         background-color: #f0f0f0;
         color: #333333;
         border: 1px solid #cccccc;
+        font-weight: 500;
+        border-radius: 6px;
     }
 
     /* 実行結果 (subheader) の区切り */
@@ -135,13 +137,18 @@ def initialize_knowledge_base():
 def create_safe_prompt(system_instruction, user_query, context=""):
     """ユーザー入力を明確なデリミタで囲んだ安全なプロンプトを生成する"""
     
-    base_prompt = f"""
-    {system_instruction}
-
+    # 参照情報が提供されていない場合はセクションを省略
+    context_section = f"""
     ---
     【参照情報】
     {context}
     ---
+    """ if context else ""
+    
+    base_prompt = f"""
+    {system_instruction}
+
+    {context_section}
 
     【ユーザーが指定した事案】
     ***START_OF_USER_QUERY***
@@ -246,9 +253,6 @@ def reset_workflow():
     
     st.rerun() 
 
-# --- キャッシュクリアボタンのロジック ---
-# clear_knowledge_cache() 関数は削除しました。
-
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
     st.session_state['current_step'] = 1 
@@ -291,15 +295,14 @@ if db_instance:
         st.subheader("💡 AIからのフィードバック")
         st.warning(f"以下の不足事実を追記・修正してください:\n\n{st.session_state['fact_feedback']}")
         
-        # 以前のクエリとフィードバックを結合して、編集可能なテキストエリアに表示
+        # 以前のクエリを編集可能なテキストエリアに表示
         edited_query = st.text_area(
             "【不足事実を追記・修正してください】",
-            value=original_query + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
+            value=original_query, # original_query の最新値を表示
             height=350,
             key="edited_query_for_step2", # ステップ2専用のキー
             max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
         )
-        final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
 
     else:
         # ステップ1と3の入力エリア
@@ -312,111 +315,155 @@ if db_instance:
             max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
         )
         # 入力された値を original_query にバインド
-        st.session_state['original_query'] = current_query 
-        final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
-        
+        st.session_state['original_query'] = current_query  
     
     # ----------------------------------------------------
     # ボタンとロジックの実行
     # ----------------------------------------------------
     
     # ボタン配置: メインボタンとユーティリティボタンを横並びにする
-    # リロードボタン削除に伴い、コラムを [メイン, リセット] の2つに変更
     col_main, col_reset = st.columns([0.75, 0.25]) 
 
-    # --- 1. メインボタン ---
-    with col_main:
-        button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
-
-        if st.button(button_label, type="primary", disabled=is_running): 
-            
-            # 【セキュリティ修正1: リソース乱用対策】入力長チェック
-            if not final_query_to_use or final_query_to_use.strip() == "":
-                st.warning("事案の概要を入力してください。")
-                st.session_state['running'] = False 
-                st.rerun()
-            elif len(final_query_to_use) > MAX_INPUT_LENGTH:
-                 st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
-                 st.session_state['running'] = False
-                 st.stop() # 長すぎる場合は強制停止
-            
-            # Phase 1: ガードレールチェック
-            if st.session_state['current_step'] == 1:
-                st.session_state['running'] = True
-                with st.spinner("ステップ1/3: 法律関連の事案かチェック中です..."):
-                    relevance = check_query_relevance(final_query_to_use)
-
-                if relevance == "NO":
-                    st.error("入力内容は法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
-                    st.session_state['running'] = False
-                    st.rerun()
-                else:
-                    # 法律関連と判断 -> Phase 2: 事実補完チェックへ
-                    st.session_state['original_query'] = final_query_to_use # オリジナルクエリを保存
-                    st.session_state['running'] = True
-                    with st.spinner("ステップ2/3: 不足事実のチェック中です..."):
-                        missing_facts = check_for_missing_facts(db_instance, final_query_to_use) 
-                    
-                    st.session_state['running'] = False
-                    
-                    if "OK" in missing_facts.upper():
-                        # 不足事実なし -> Phase 3へスキップ
-                        st.session_state['current_step'] = 3
-                    else:
-                        # 不足事実あり -> Phase 2でフィードバック待ち
-                        st.session_state['current_step'] = 2
-                        st.session_state['fact_feedback'] = missing_facts
-                    st.rerun() # 画面を更新して次のステップへ
-
-            # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
-            elif st.session_state['current_step'] == 2:
-                # 修正された最新のクエリを original_query に上書き保存する
-                st.session_state['original_query'] = final_query_to_use 
-                
-                # ユーザーが修正を完了したため、再度チェックを行う (二重チェック)
-                st.session_state['running'] = True
-                with st.spinner("ステップ2/3: 修正された事案で不足事実を再チェック中です..."):
-                    missing_facts_recheck = check_for_missing_facts(db_instance, final_query_to_use)
-                
-                st.session_state['running'] = False
-                
-                if "OK" in missing_facts_recheck.upper():
-                    # 再チェックでOKが出た -> Phase 3へ
-                    st.session_state['current_step'] = 3
-                    del st.session_state['fact_feedback'] # フィードバックをクリア
-                else:
-                    # まだ不足あり -> 再度ステップ2にとどまり、新しいフィードバックを表示
-                    st.session_state['current_step'] = 2
-                    st.session_state['fact_feedback'] = missing_facts_recheck # 新しいフィードバックを保存
-                    st.error("まだ不足している事実があります。AIの指摘を参考に再度追記してください。")
-
-                st.rerun() # 画面を更新
-
-            # Phase 3: 最終生成
-            elif st.session_state['current_step'] == 3:
-                st.session_state['running'] = True
-                with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
-                    try:
-                        # 最終的に使用するクエリは st.session_state['original_query']
-                        result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
-                        
-                        st.subheader("✅ 請求権と要件事実の構成")
-                        st.markdown(result)
-                        
-                    except Exception as e:
-                        st.error(f"処理中にエラーが発生しました。詳細: {e}")
-                    finally:
-                        st.session_state['running'] = False
-                        st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻る
-    
-    # --- 2. 最初に戻るボタン ---
+    # --- 2. 最初に戻るボタン (col_reset) ---
     with col_reset:
-        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) 
+        # Step 2 の場合は、メインボタンが2つあるため高さを調整
+        if st.session_state['current_step'] == 2:
+             # 強制スキップボタンの分だけ高さを合わせるため、スペースは短くする
+             st.markdown("<div style='height: 1px;'></div>", unsafe_allow_html=True) 
+        else:
+            st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) 
         if st.button("最初に戻る", help="ワークフローをステップ1にリセットします。", use_container_width=True):
             reset_workflow()
+            
+    # --- 1. メインボタン (col_main) ---
+    with col_main:
+        
+        # Step 2: 2つのボタンを並べる (再チェック/強制スキップ)
+        if st.session_state['current_step'] == 2:
+            
+            st.markdown("---")
+            st.subheader("実行オプション")
+            
+            col_recheck, col_force = st.columns([0.5, 0.5])
+            
+            # --- オプション A: AIに再チェックさせる (既存ロジックの維持) ---
+            with col_recheck:
+                if st.button("修正内容で再チェックし、次のステップへ", type="primary", disabled=is_running, help="AIが修正後の事案を再度チェックし、不足事実がない場合に最終生成に進みます。", key="btn_recheck"):
+                    
+                    # Step 2の入力値を取得
+                    current_query = st.session_state.get('edited_query_for_step2', st.session_state['original_query'])
+                    
+                    if not current_query or current_query.strip() == "":
+                        st.warning("事案の概要を入力してください。")
+                        st.session_state['running'] = False
+                        st.rerun()
+                    elif len(current_query) > MAX_INPUT_LENGTH:
+                        st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
+                        st.session_state['running'] = False
+                        st.stop()
+                        
+                    st.session_state['original_query'] = current_query # 修正された最新のクエリを保存
+                    
+                    st.session_state['running'] = True
+                    with st.spinner("ステップ2/3: 修正された事案で不足事実を再チェック中です..."):
+                        missing_facts_recheck = check_for_missing_facts(db_instance, current_query)
+                    
+                    st.session_state['running'] = False
+                    
+                    if "OK" in missing_facts_recheck.upper():
+                        st.session_state['current_step'] = 3
+                        if 'fact_feedback' in st.session_state: del st.session_state['fact_feedback']
+                    else:
+                        st.session_state['current_step'] = 2
+                        st.session_state['fact_feedback'] = missing_facts_recheck 
+                        st.error("まだ不足している事実があります。AIの指摘を参考に再度追記してください。")
 
-    # --- 3. リロードボタン ---
-    # リロードボタンのUI要素は削除しました。
+                    st.rerun()
+                    
+            # --- オプション B: 強制スキップ (ユーザー要望の新機能) ---
+            with col_force:
+                if st.button("この情報で要件事実を最終生成する (不足事実を無視)", disabled=is_running, help="AIのフィードバックを無視し、現在の事案記述で最終的な要件事実の生成に進みます。", key="btn_force_skip"):
+                    
+                    # Step 2の入力値を取得
+                    current_query = st.session_state.get('edited_query_for_step2', st.session_state['original_query'])
+                    
+                    if not current_query or current_query.strip() == "":
+                        st.warning("事案の概要を入力してください。")
+                        st.session_state['running'] = False
+                        st.rerun()
+                    elif len(current_query) > MAX_INPUT_LENGTH:
+                        st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
+                        st.session_state['running'] = False
+                        st.stop()
+                        
+                    # 強制スキップ時は、編集後のクエリを保存し、ステップ3へ
+                    st.session_state['original_query'] = current_query 
+                    st.session_state['current_step'] = 3
+                    if 'fact_feedback' in st.session_state: del st.session_state['fact_feedback']
+                    st.rerun()
+                    
+        
+        else: # Step 1 または Step 3 の場合 (単一ボタン)
+            
+            button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
+            
+            # Step 1/3の入力値 (st.session_state['original_query'] にバインド済み)
+            current_query = st.session_state.get('original_query', "") 
+
+            if st.button(button_label, type="primary", disabled=is_running): 
+                
+                # 入力長チェック (Step 1/3 の入力エリアは 'original_query' が最新値)
+                if not current_query or current_query.strip() == "":
+                    st.warning("事案の概要を入力してください。")
+                    st.session_state['running'] = False 
+                    st.rerun()
+                elif len(current_query) > MAX_INPUT_LENGTH:
+                    st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
+                    st.session_state['running'] = False
+                    st.stop() 
+                    
+                # Phase 1: ガードレールチェック
+                if st.session_state['current_step'] == 1:
+                    st.session_state['running'] = True
+                    with st.spinner("ステップ1/3: 法律関連の事案かチェック中です..."):
+                        relevance = check_query_relevance(current_query)
+
+                    if relevance == "NO":
+                        st.error("入力内容は法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
+                        st.session_state['running'] = False
+                        st.rerun()
+                    else:
+                        # 法律関連と判断 -> Phase 2: 事実補完チェックへ
+                        st.session_state['original_query'] = current_query 
+                        st.session_state['running'] = True
+                        with st.spinner("ステップ2/3: 不足事実のチェック中です..."):
+                            missing_facts = check_for_missing_facts(db_instance, current_query) 
+                        
+                        st.session_state['running'] = False
+                        
+                        if "OK" in missing_facts.upper():
+                            st.session_state['current_step'] = 3
+                        else:
+                            st.session_state['current_step'] = 2
+                            st.session_state['fact_feedback'] = missing_facts
+                        st.rerun() 
+
+                # Phase 3: 最終生成
+                elif st.session_state['current_step'] == 3:
+                    st.session_state['running'] = True
+                    with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
+                        try:
+                            # 最終的に使用するクエリは st.session_state['original_query']
+                            result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
+                            
+                            st.subheader("✅ 請求権と要件事実の構成")
+                            st.markdown(result)
+                            
+                        except Exception as e:
+                            st.error(f"処理中にエラーが発生しました。詳細: {e}")
+                        finally:
+                            st.session_state['running'] = False
+                            st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻る
 
 else:
     # 失敗時のみ、詳細なエラーメッセージを表示
