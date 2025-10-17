@@ -185,7 +185,7 @@ def check_for_missing_facts(db, query):
     docs = db.similarity_search(query, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     
     system_instruction = """
     あなたは要件事実の専門家です。提供された参照情報に基づき、ユーザーが指定した事案を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している主要事実**または**曖昧な主要事実**を特定し、ユーザーに補完を促す文章を作成してください。
@@ -231,7 +231,7 @@ def get_required_elements_from_rag(db, description):
         ]
     )
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     
     chain = prompt_template | llm | StrOutputParser()
     response = chain.invoke({"contract_description": description, "context": context})
