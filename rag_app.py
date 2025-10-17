@@ -22,7 +22,7 @@ else:
 KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
 PERSIST_DIR = "chroma_db_cache" 
 # 【セキュリティ修正1: リソース乱用対策】入力の最大文字数を設定
-MAX_INPUT_LENGTH = 1500 # 1500文字に制限 (必要に応じて調整可能)
+MAX_INPUT_LENGTH = 3500 # 3500文字に制限 (必要に応じて調整可能)
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
