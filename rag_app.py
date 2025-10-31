@@ -8,6 +8,9 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# 【セキュリティ・設定】
+MAX_INPUT_LENGTH = 3500
+
 # ====================================================
 # 0. 設定と初期化 (APIキーの秘匿化)
 # ====================================================
@@ -15,14 +18,11 @@ from langchain_core.output_parsers import StrOutputParser
 if "GEMINI_API_KEY" in st.secrets:
     os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 else:
-    # 秘匿化されたキーがない場合はエラーで停止
     st.error("エラー: Secretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop() 
 
 KNOWLEDGE_BASE_PATH = "knowledge_base.txt" 
-PERSIST_DIR = "chroma_db_cache" 
-# 【セキュリティ修正1: リソース乱用対策】入力の最大文字数を設定
-MAX_INPUT_LENGTH = 3500 # 3500文字に制限 (必要に応じて調整可能)
+PERSIST_DIR = "chroma_db_cache"            
 
 st.set_page_config(page_title="要件事実支援アプリ", layout="wide")
 
@@ -37,8 +37,8 @@ st.markdown(
     
     /* メインタイトル (H1) の視覚的区切り */
     h1 {
-        color: #333333; /* 落ち着いたダークグレー */
-        border-bottom: 3px solid #0078D4; /* Microsoft系の爽やかな青線 */
+        color: #333333;
+        border-bottom: 3px solid #0078D4;
         padding-bottom: 5px;
     }
 
@@ -49,25 +49,23 @@ st.markdown(
     }
 
     /* プライマリボタン (最終生成ボタン) の設定 */
-    .stButton>button[type="primary"] {
-        background-color: #0078D4; /* 鮮やかな青 */
+    .stButton>button {
+        background-color: #0078D4; 
         color: white;
         font-weight: bold;
         border-radius: 6px;
         border: none;
         transition: background-color 0.3s;
     }
-    .stButton>button[type="primary"]:hover {
+    .stButton>button:hover {
         background-color: #005A9E; 
     }
     
-    /* セカンダリボタン (最初に戻る, 強制スキップ) の調整 */
-    .stButton>button:not([type="primary"]) {
+    /* セカンダリボタン (最初に戻る、リロード) の調整 */
+    .stButton:not(.stButton>button[type="primary"])>button {
         background-color: #f0f0f0;
         color: #333333;
         border: 1px solid #cccccc;
-        font-weight: 500;
-        border-radius: 6px;
     }
 
     /* 実行結果 (subheader) の区切り */
@@ -105,8 +103,8 @@ def initialize_knowledge_base():
     try:
         # --- チャンキング最適化 ---
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=5000,          # 5000文字 (実質無制限)
-            chunk_overlap=0,            
+            chunk_size=500000,        # 50万文字 (実質無制限)
+            chunk_overlap=0,          
             separators=["\n\n", "。", "、", "\n", " ", ""], # 句読点、改行、スペースを優先
             length_function=len,
             is_separator_regex=False
@@ -133,48 +131,19 @@ def initialize_knowledge_base():
 # 1.5. ユーティリティ機能
 # ====================================================
 
-# 【セキュリティ修正2: プロンプトインジェクション対策】
-def create_safe_prompt(system_instruction, user_query, context=""):
-    """ユーザー入力を明確なデリミタで囲んだ安全なプロンプトを生成する"""
-    
-    # 参照情報が提供されていない場合はセクションを省略
-    context_section = f"""
-    ---
-    【参照情報】
-    {context}
-    ---
-    """ if context else ""
-    
-    base_prompt = f"""
-    {system_instruction}
-
-    {context_section}
-
-    【ユーザーが指定した事案】
-    ***START_OF_USER_QUERY***
-    {user_query}
-    ***END_OF_USER_QUERY***
-    """
-    return base_prompt
-
 @st.cache_data(ttl=600)
 def check_query_relevance(query):
     """入力されたクエリが法律関連の事案であるかをAIに判定させる (ステップ1: ガードレール)"""
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0) 
-    
-    system_instruction = """
-    あなたは入力されたテキストを分類するAIです。以下のユーザー入力は、**法的な紛争や主張**に関連する「事案の記述」ですか？
+    prompt = f"""
+    以下のユーザー入力は、**法的な紛争や主張**に関連する「事案の記述」ですか？
     全く関係のない雑談、レシピ、プログラミングコード、または意味のないランダムな文字列である場合は「No」とだけ回答してください。
     それ以外の場合は「Yes」とだけ回答してください。
-    回答は「Yes」または「No」のみを厳守してください。
+    ユーザー入力："{query}"
     """
-    
-    prompt = create_safe_prompt(system_instruction, query)
-    
     try:
         response = llm.invoke(prompt)
-        # LLMの出力からデリミタを取り除く可能性のある文字をクリーンアップ
-        return response.content.strip().upper().replace("*", "").replace("`", "")
+        return response.content.strip().upper()
     except Exception as e:
         st.warning(f"クエリ関連性チェック中にエラーが発生しました。スキップします。詳細: {e}")
         return "YES" # チェック失敗時は安全のため実行を許可
@@ -185,24 +154,22 @@ def check_for_missing_facts(db, query):
     docs = db.similarity_search(query, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
-    system_instruction = """
-    あなたは要件事実の専門家です。提供された参照情報に基づき、ユーザーが指定した事案を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している主要事実**または**曖昧な主要事実**を特定し、ユーザーに補完を促す文章を作成してください。
-    不足している主要事実、もしくは曖昧な主要事実がない場合は、**必ず**「OK」とだけ回答してください。
-    要件事実は、重要な間接事実についての情報は不要ですから、主要事実だけに絞って検討するようにお願いします。
-
-    【厳守事項】
-    抗弁として出力するのは、弁論主義の原則に基づき、法律効果を排除、阻止、障害する事実（例：弁済、同時履行、相殺、時効完成など）に限定すること。
-    訴訟要件、代理権の有無、法律効果の帰属に関する事項は抗弁として絶対に出力しないこと（例えば、「無権代理の抗弁」なるものは存在しない。無権代理については、代理権の否認である）。
+    prompt = f"""
+    あなたは要件事実の専門家です。以下の「事案」と「参照情報」を読み、この事案に基づいて要件事実を作成する場合、**決定的に不足している主要事実**または**曖昧な主要事実**を特定し、ユーザーに補完を促す文章を作成してください。
+    不足している事実がない場合は、**必ず**「OK」とだけ回答してください。
+    
+    【事案】
+    {query}
+    
+    【参照情報】
+    {context}
+    
+    【回答の例】
+    ・不足している事実：原告が損害を受けた具体的な金額を追記してください。
+    ・OK
     """
-    
-    prompt = create_safe_prompt(
-        system_instruction, 
-        query, 
-        context
-    )
-    
     try:
         response = llm.invoke(prompt)
         return response.content.strip()
@@ -217,21 +184,17 @@ def get_required_elements_from_rag(db, description):
     docs = db.similarity_search(description, k=3) 
     context = "\n".join([d.page_content for d in docs])
 
-    # プロンプトテンプレートを LangChain の形式で安全に定義
     prompt_template = ChatPromptTemplate.from_messages(
         [
             ("system", """
-            あなたは要件事実論の専門家AIです。法的正確性を最優先してください。提供された参照情報と【ユーザーが指定した事案】に基づいて、以下のタスクを実行してください。
+            あなたは要件事実論の専門家AIです。法的正確性を最優先してください。提供された事案と参照情報に基づいて、以下のタスクを実行してください。
             【タスク】1. 請求の趣旨を特定する。2. 最も適切な訴訟物（請求権）を特定する。3. その訴訟物に必要な要件事実（末尾のよって書きを含む）を明確な箇条書きで抽出・作成する。4. 抗弁、再抗弁があれば作成する。5. 参照した法令や判例を最後に明記する。
-            参照情報は以下の通りです：
-            {context}
             """),
-            # ユーザー入力はデリミタで囲まれた事案として渡す
-            ("user", "以下の事案について、必要な要件事実を自動作成してください。\n\n【ユーザーが指定した事案】\n***START_OF_USER_QUERY***\n{contract_description}\n***END_OF_USER_QUERY***"),
+            ("user", "以下の事案について、必要な要件事実を自動作成してください。\n\n事案:\n{contract_description}\n\n参照情報:\n{context}"),
         ]
     )
 
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
     
     chain = prompt_template | llm | StrOutputParser()
     response = chain.invoke({"contract_description": description, "context": context})
@@ -243,29 +206,32 @@ def get_required_elements_from_rag(db, description):
 
 # --- ユーティリティ関数: ステップをリセットし最初に戻る ---
 def reset_workflow():
-    # Streamlitのバグ回避のため、セッションステートをクリアし、キーを強制更新
-    st.session_state['current_step'] = 1
-    
-    # ワークフローに必要なキーを削除
-    keys_to_delete = ['original_query', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'running']
+    # 【最終修正】入力値の完全クリアロジック: 
+    # Session Stateに保存されているすべての入力関連キーを削除し、強制的に初期状態に戻す
+    keys_to_delete = ['current_step', 'original_query', 'edited_query_for_step2', 'initial_query', 'fact_feedback', 'running']
     for key in keys_to_delete:
         if key in st.session_state:
             del st.session_state[key]
     
-    # 入力ウィジェットのキーを更新し、新しい空のウィジェットを強制描画させる
+    # Textareaのキー自体を更新し、新しい空のウィジェットを強制描画させる
     st.session_state['input_key'] = str(uuid.uuid4())
     
     st.rerun() 
 
+# --- キャッシュクリアボタンのロジック ---
+def clear_knowledge_cache():
+    st.cache_resource.clear()
+    st.rerun()
+
 # --- アプリの状態管理 ---
 if 'current_step' not in st.session_state:
-    st.session_state['current_step'] = 1 
+    st.session_state['current_step'] = 1  # 1: 事案入力, 2: 事実補完待ち
 if 'original_query' not in st.session_state:
     st.session_state['original_query'] = "" # 全てのステップで参照する「真実の源」を初期化
 if 'input_key' not in st.session_state:
     st.session_state['input_key'] = str(uuid.uuid4()) # 入力ウィジェットのキーを初期化
 
-st.title("⚖️ 要件事実 自動作成アシスタント")
+st.title("⚖️ 要件事実 自動作成アシスタント (RAG-POC)")
 
 
 # データベースの初期化
@@ -299,175 +265,129 @@ if db_instance:
         st.subheader("💡 AIからのフィードバック")
         st.warning(f"以下の不足事実を追記・修正してください:\n\n{st.session_state['fact_feedback']}")
         
-        # 以前のクエリを編集可能なテキストエリアに表示
+        # 以前のクエリとフィードバックを結合して、編集可能なテキストエリアに表示
         edited_query = st.text_area(
             "【不足事実を追記・修正してください】",
-            value=original_query, # original_query の最新値を表示
+            value=original_query + "\n\n---\n\n【AIの指摘】:\n" + st.session_state['fact_feedback'],
             height=350,
-            key="edited_query_for_step2", # ステップ2専用のキー
-            max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
+            key="edited_query_for_step2" # ステップ2専用のキー
         )
+        final_query_to_use = edited_query # ステップ3では修正後の内容を使用する
 
     else:
         # ステップ1と3の入力エリア
+        # 入力エリアの値は常に original_query の値を表示
         current_query = st.text_area(
             "【事案の概要を入力してください】",
             value=original_query, # original_query の値を表示
             height=300,
-            placeholder=f"例：\nＸの言い分\n私は、令和６年４月６日に、父Ａから相続して私が所有していた甲土地を、是非欲しいと言ってきた友人のＹに売りました。代金は２０００万円で、支払日は令和６年５月６日の約束で、同年４月６日にＹに甲土地を引き渡しました。ところが、Ｙは、いろいろと文句を言ってその代金を支払ってくれません。そこで、上記売買契約に基づいて代金２０００万円の支払を求めます。\n\nＹの言い分\n甲土地を売買することについては私もＸも異論がなかったのですが、結局、代金額について折り合いがつきませんでした。甲土地は、Ｘが相続で取得したのではなく、Ｘの叔父Ｂから贈与されたもののはずですから、Ｘは嘘をついています。　\n\n（最大{MAX_INPUT_LENGTH}文字）",
+            placeholder="例：\n令和6年5月1日、売主Aは買主Bに対し、マンションの一室を引き渡した。\n同年5月10日、Bは、契約書に「全室無垢材フローリング」とあるにも関わらず、リビングの床材が合板であることを発見したため、契約不適合による損害賠償を請求したい。",
             key=st.session_state['input_key'], # ランダムなキーを使用
-            max_chars=MAX_INPUT_LENGTH # 【セキュリティ修正1: リソース乱用対策】
+            max_chars=MAX_INPUT_LENGTH,
+            # 入力時に original_query に値を保存
+            on_change=lambda: st.session_state.update(original_query=st.session_state[st.session_state['input_key']]) 
         )
-        # 入力された値を original_query にバインド
-        st.session_state['original_query'] = current_query  
+        final_query_to_use = current_query # ステップ1/3では入力内容をそのまま使用する
+        
     
     # ----------------------------------------------------
     # ボタンとロジックの実行
     # ----------------------------------------------------
     
     # ボタン配置: メインボタンとユーティリティボタンを横並びにする
-    col_main, col_reset = st.columns([0.75, 0.25]) 
+    col_main, col_reset, col_reload = st.columns([0.65, 0.20, 0.15]) 
 
-    # --- 2. 最初に戻るボタン (col_reset) ---
+    # --- 1. メインボタン ---
+    with col_main:
+        button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
+
+        if st.button(button_label, type="primary", disabled=is_running): 
+            if not final_query_to_use or final_query_to_use.strip() == "":
+                st.warning("事案の概要を入力してください。")
+                st.session_state['running'] = False 
+                st.rerun()
+
+            # Phase 1: ガードレールチェック
+            if st.session_state['current_step'] == 1:
+                st.session_state['running'] = True
+                with st.spinner("ステップ1/3: 法律関連の事案かチェック中です..."):
+                    relevance = check_query_relevance(final_query_to_use)
+
+                if relevance == "NO":
+                    st.error("入力内容は法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
+                    st.session_state['running'] = False
+                    st.rerun()
+                else:
+                    # 法律関連と判断 -> Phase 2: 事実補完チェックへ
+                    st.session_state['original_query'] = final_query_to_use # オリジナルクエリを保存
+                    st.session_state['running'] = True
+                    with st.spinner("ステップ2/3: 不足事実のチェック中です..."):
+                        missing_facts = check_for_missing_facts(db_instance, final_query_to_use) 
+                    
+                    st.session_state['running'] = False
+                    
+                    if "OK" in missing_facts.upper():
+                        # 不足事実なし -> Phase 3へスキップ
+                        st.session_state['current_step'] = 3
+                    else:
+                        # 不足事実あり -> Phase 2でフィードバック待ち
+                        st.session_state['current_step'] = 2
+                        st.session_state['fact_feedback'] = missing_facts
+                st.rerun() # 画面を更新して次のステップへ
+
+            # Phase 2: 事実補完後の最終実行 (ボタンが押されたら Phase 3へ)
+            elif st.session_state['current_step'] == 2:
+                # 修正された最新のクエリを original_query に上書き保存する
+                st.session_state['original_query'] = final_query_to_use # 👈 ステップ2で編集された内容がここで上書きされる
+                
+                # ユーザーが修正を完了したため、再度チェックを行う (二重チェック)
+                st.session_state['running'] = True
+                with st.spinner("ステップ2/3: 修正された事案で不足事実を再チェック中です..."):
+                    missing_facts_recheck = check_for_missing_facts(db_instance, final_query_to_use)
+                
+                st.session_state['running'] = False
+                
+                if "OK" in missing_facts_recheck.upper():
+                    # 再チェックでOKが出た -> Phase 3へ
+                    st.session_state['current_step'] = 3
+                    del st.session_state['fact_feedback'] # フィードバックをクリア
+                else:
+                    # まだ不足あり -> 再度ステップ2にとどまり、新しいフィードバックを表示
+                    st.session_state['current_step'] = 2
+                    st.session_state['fact_feedback'] = missing_facts_recheck # 新しいフィードバックを保存
+                    st.error("まだ不足している事実があります。AIの指摘を参考に再度追記してください。")
+
+                st.rerun() # 画面を更新
+
+            # Phase 3: 最終生成
+            elif st.session_state['current_step'] == 3:
+                st.session_state['running'] = True
+                with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
+                    try:
+                        # 最終的に使用するクエリは st.session_state['original_query']
+                        result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
+                        
+                        st.subheader("✅ 請求権と要件事実の構成")
+                        st.markdown(result)
+                        
+                    except Exception as e:
+                        st.error(f"処理中にエラーが発生しました。詳細: {e}")
+                    finally:
+                        st.session_state['running'] = False
+                        st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻る
+    
+    # --- 2. 最初に戻るボタン ---
     with col_reset:
-        # Step 2 の場合は、メインボタンが2つあるため高さを調整
-        if st.session_state['current_step'] == 2:
-             # 強制スキップボタンの分だけ高さを合わせるため、スペースは短くする
-             st.markdown("<div style='height: 1px;'></div>", unsafe_allow_html=True) 
-        else:
-            st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) 
+        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True) 
         if st.button("最初に戻る", help="ワークフローをステップ1にリセットします。", use_container_width=True):
             reset_workflow()
-            
-    # --- 1. メインボタン (col_main) ---
-    with col_main:
-        
-        # Step 2: 2つのボタンを並べる (再チェック/強制スキップ)
-        if st.session_state['current_step'] == 2:
-            
-            st.markdown("---")
-            st.subheader("実行オプション")
-            
-            col_recheck, col_force = st.columns([0.5, 0.5])
-            
-            # --- オプション A: AIに再チェックさせる (既存ロジックの維持) ---
-            with col_recheck:
-                if st.button("修正内容で再チェックし、次のステップへ", type="primary", disabled=is_running, help="AIが修正後の事案を再度チェックし、不足事実がない場合に最終生成に進みます。", key="btn_recheck"):
-                    
-                    # Step 2の入力値を取得
-                    current_query = st.session_state.get('edited_query_for_step2', st.session_state['original_query'])
-                    
-                    if not current_query or current_query.strip() == "":
-                        st.warning("事案の概要を入力してください。")
-                        st.session_state['running'] = False
-                        st.rerun()
-                    elif len(current_query) > MAX_INPUT_LENGTH:
-                        st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
-                        st.session_state['running'] = False
-                        st.stop()
-                        
-                    st.session_state['original_query'] = current_query # 修正された最新のクエリを保存
-                    
-                    st.session_state['running'] = True
-                    with st.spinner("ステップ2/3: 修正された事案で不足事実を再チェック中です..."):
-                        missing_facts_recheck = check_for_missing_facts(db_instance, current_query)
-                    
-                    st.session_state['running'] = False
-                    
-                    if "OK" in missing_facts_recheck.upper():
-                        st.session_state['current_step'] = 3
-                        if 'fact_feedback' in st.session_state: del st.session_state['fact_feedback']
-                    else:
-                        st.session_state['current_step'] = 2
-                        st.session_state['fact_feedback'] = missing_facts_recheck 
-                        st.error("まだ不足している事実があります。AIの指摘を参考に再度追記してください。")
 
-                    st.rerun()
-                    
-            # --- オプション B: 強制スキップ (ユーザー要望の新機能) ---
-            with col_force:
-                if st.button("この情報で要件事実を最終生成する (不足事実を無視)", disabled=is_running, help="AIのフィードバックを無視し、現在の事案記述で最終的な要件事実の生成に進みます。", key="btn_force_skip"):
-                    
-                    # Step 2の入力値を取得
-                    current_query = st.session_state.get('edited_query_for_step2', st.session_state['original_query'])
-                    
-                    if not current_query or current_query.strip() == "":
-                        st.warning("事案の概要を入力してください。")
-                        st.session_state['running'] = False
-                        st.rerun()
-                    elif len(current_query) > MAX_INPUT_LENGTH:
-                        st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
-                        st.session_state['running'] = False
-                        st.stop()
-                        
-                    # 強制スキップ時は、編集後のクエリを保存し、ステップ3へ
-                    st.session_state['original_query'] = current_query 
-                    st.session_state['current_step'] = 3
-                    if 'fact_feedback' in st.session_state: del st.session_state['fact_feedback']
-                    st.rerun()
-                    
-        
-        else: # Step 1 または Step 3 の場合 (単一ボタン)
-            
-            button_label = "次のステップへ (事実確認)" if st.session_state['current_step'] != 3 else "📝 要件事実を最終生成する"
-            
-            # Step 1/3の入力値 (st.session_state['original_query'] にバインド済み)
-            current_query = st.session_state.get('original_query', "") 
+    # --- 3. リロードボタン ---
+    with col_reload:
+        st.markdown("<div style='height: 35px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 リロード", help="知識ベースファイルを更新した後に押してください。", use_container_width=True):
+            clear_knowledge_cache()
 
-            if st.button(button_label, type="primary", disabled=is_running): 
-                
-                # 入力長チェック (Step 1/3 の入力エリアは 'original_query' が最新値)
-                if not current_query or current_query.strip() == "":
-                    st.warning("事案の概要を入力してください。")
-                    st.session_state['running'] = False 
-                    st.rerun()
-                elif len(current_query) > MAX_INPUT_LENGTH:
-                    st.error(f"入力が長すぎます。{MAX_INPUT_LENGTH}文字以下にしてください。")
-                    st.session_state['running'] = False
-                    st.stop() 
-                    
-                # Phase 1: ガードレールチェック
-                if st.session_state['current_step'] == 1:
-                    st.session_state['running'] = True
-                    with st.spinner("ステップ1/3: 法律関連の事案かチェック中です..."):
-                        relevance = check_query_relevance(current_query)
-
-                    if relevance == "NO":
-                        st.error("入力内容は法律関連の事案として認識されませんでした。要件事実に関する具体的な事案を記述してください。")
-                        st.session_state['running'] = False
-                        st.rerun()
-                    else:
-                        # 法律関連と判断 -> Phase 2: 事実補完チェックへ
-                        st.session_state['original_query'] = current_query 
-                        st.session_state['running'] = True
-                        with st.spinner("ステップ2/3: 不足事実のチェック中です..."):
-                            missing_facts = check_for_missing_facts(db_instance, current_query) 
-                        
-                        st.session_state['running'] = False
-                        
-                        if "OK" in missing_facts.upper():
-                            st.session_state['current_step'] = 3
-                        else:
-                            st.session_state['current_step'] = 2
-                            st.session_state['fact_feedback'] = missing_facts
-                        st.rerun() 
-
-                # Phase 3: 最終生成
-                elif st.session_state['current_step'] == 3:
-                    st.session_state['running'] = True
-                    with st.spinner("ステップ3/3: 要件事実の最終構成を生成中です..."):
-                        try:
-                            # 最終的に使用するクエリは st.session_state['original_query']
-                            result = get_required_elements_from_rag(db_instance, st.session_state['original_query'])
-                            
-                            st.subheader("✅ 請求権と要件事実の構成")
-                            st.markdown(result)
-                            
-                        except Exception as e:
-                            st.error(f"処理中にエラーが発生しました。詳細: {e}")
-                        finally:
-                            st.session_state['running'] = False
-                            st.session_state['current_step'] = 1 # 処理完了後、ステップ1に戻る
 
 else:
     # 失敗時のみ、詳細なエラーメッセージを表示
